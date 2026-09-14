@@ -274,15 +274,22 @@ function renderViaResults(vias) {
   });
 }
 
-// "calle mayor 15" -> ["calle mayor", "15"]; null si no hay un numero
-// puramente numerico al final (o si tras quitarlo no queda texto).
-function splitTrailingNumero(q) {
+// "calle mayor 15" -> ["calle mayor", "15"], igual que "braña 1 sada"
+// -> ["braña sada", "1"]: si hay EXACTAMENTE un token puramente
+// numerico en cualquier posicion, se saca de ahi (no solo del final).
+// null si no hay ninguno, si hay mas de uno (ambiguo, no adivinamos
+// cual es el numero de portal) o si tras quitarlo no queda texto.
+function splitNumero(q) {
   const tokens = q.split(/\s+/).filter(Boolean);
-  const last = tokens[tokens.length - 1];
-  if (!last || !/^\d+$/.test(last)) return null;
-  tokens.pop();
-  if (tokens.length === 0) return null;
-  return [tokens.join(" "), last];
+  const numericos = tokens
+    .map((t, i) => (/^\d+$/.test(t) ? i : -1))
+    .filter((i) => i !== -1);
+  if (numericos.length !== 1) return null;
+  const [idx] = numericos;
+  const numero = tokens[idx];
+  const resto = [...tokens.slice(0, idx), ...tokens.slice(idx + 1)];
+  if (resto.length === 0) return null;
+  return [resto.join(" "), numero];
 }
 
 // via_fts (endpoint /buscar) solo indexa nombres de calle, asi que
@@ -322,7 +329,7 @@ async function doSearch(q) {
     });
 
     if (vias.length === 0) {
-      const partido = splitTrailingNumero(q);
+      const partido = splitNumero(q);
       if (partido) {
         const [resto, numero] = partido;
         const viasSinNumero = await apiGet("/buscar", {
