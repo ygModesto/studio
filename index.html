@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Direcciones de España</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📍</text></svg>">
+<!-- Pinned a 5.9.0 (ultima release que trae el bundle UMD clasico:
+     desde 6.x el paquete es ESM-only, solo dist/maplibre-gl.mjs, y
+     "<script src=...maplibre-gl.js>" da 404. -->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
+<style>
+  :root {
+    --panel-bg: rgba(255, 255, 255, 0.96);
+    --text: #1a1a1a;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--text); }
+  #map { position: absolute; inset: 0; }
+
+  #panel {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    width: min(380px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    background: var(--panel-bg);
+    backdrop-filter: blur(6px);
+    border-radius: 14px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 10;
+  }
+  #panel-header {
+    padding: 14px 16px 10px;
+  }
+  #panel-header h1 {
+    font-size: 15px;
+    font-weight: 700;
+    margin: 0 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #search-row {
+    display: flex;
+    gap: 8px;
+  }
+  #search {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+  #near-btn {
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: white;
+    border-radius: 8px;
+    padding: 0 12px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  #near-btn:hover { background: #f3f4f6; }
+  #near-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+
+  #status {
+    padding: 0 16px 8px;
+    font-size: 12.5px;
+    color: var(--muted);
+    min-height: 1.2em;
+  }
+  #status.error { color: var(--danger); }
+
+  #results {
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+  }
+  .result {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .result:hover, .result.selected { background: #eff6ff; }
+  .result .via-name { font-weight: 600; font-size: 13.5px; }
+  .result .via-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .result .via-dist { font-size: 11.5px; color: var(--accent); font-weight: 600; }
+
+  #portales-box {
+    border-top: 1px solid var(--border);
+    padding: 10px 16px 14px;
+    display: none;
+  }
+  #portales-box.visible { display: block; }
+  #portales-box .title { font-size: 12.5px; font-weight: 600; margin-bottom: 8px; color: var(--muted); }
+  #portales-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .numero-chip {
+    border: 1px solid var(--border);
+    background: white;
+    border-radius: 6px;
+    padding: 4px 9px;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .numero-chip:hover, .numero-chip.selected { background: var(--accent); color: white; border-color: var(--accent); }
+
+  #attribution-note {
+    position: absolute;
+    bottom: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 10.5px;
+    color: rgba(0,0,0,0.55);
+    background: rgba(255,255,255,0.75);
+    padding: 2px 8px;
+    border-radius: 6px;
+    z-index: 5;
+    pointer-events: none;
+  }
+
+  @media (max-width: 480px) {
+    #panel { top: 10px; left: 10px; width: calc(100vw - 20px); }
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="attribution-note">Direcciones: CartoCiudad (IGN)</div>
+
+<div id="panel">
+  <div id="panel-header">
+    <h1>📍 Direcciones de España</h1>
+    <div id="search-row">
+      <input id="search" type="text" placeholder="Rúa Real, Santiago..." autocomplete="off">
+      <button id="near-btn" title="Buscar cerca de mí">🎯</button>
+    </div>
+  </div>
+  <div id="status"></div>
+  <div id="results"></div>
+  <div id="portales-box">
+    <div class="title">Números de portal</div>
+    <div id="portales-list"></div>
+  </div>
+</div>
+
+<script>
+const API_BASE = "https://cu44cd5pmg.execute-api.eu-south-2.amazonaws.com";
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://tiles.openfreemap.org/styles/liberty",
+  center: [-3.7, 40.1],
+  zoom: 5.4,
+});
+map.addControl(new maplibregl.NavigationControl(), "bottom-right");
+
+let viaMarker = null;
+let portalMarker = null;
+let nearMarkers = [];
+let selectedVia = null;
+let nearMode = false;
+let searchDebounce = null;
+
+const $ = (id) => document.getElementById(id);
+const searchInput = $("search");
+const nearBtn = $("near-btn");
+const statusEl = $("status");
+const resultsEl = $("results");
+const portalesBox = $("portales-box");
+const portalesList = $("portales-list");
+
+function setStatus(text, isError) {
+  statusEl.textContent = text || "";
+  statusEl.classList.toggle("error", !!isError);
+}
+
+function clearNearMarkers() {
+  nearMarkers.forEach((m) => m.remove());
+  nearMarkers = [];
+}
+
+function clearResults() {
+  resultsEl.innerHTML = "";
+  portalesBox.classList.remove("visible");
+  portalesList.innerHTML = "";
+  selectedVia = null;
+}
+
+async function apiGet(path, params) {
+  const url = new URL(API_BASE + path);
+  Object.entries(params || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
+  });
+  const res = await fetch(url);
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      const body = await res.json();
+      msg = body.error || msg;
+    } catch (_) {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// --- Busqueda de texto (con sesgo de cercania al centro visible del mapa) ---
+function renderViaResults(vias) {
+  clearResults();
+  if (vias.length === 0) {
+    setStatus("Sin resultados.");
+    return;
+  }
+  setStatus(`${vias.length} calle(s) encontrada(s)`);
+  vias.forEach((v) => {
+    const row = document.createElement("div");
+    row.className = "result";
+    const dist = v.distancia_m != null ? `<span class="via-dist">${Math.round(v.distancia_m)} m</span> · ` : "";
+    row.innerHTML = `
+      <div class="via-name">${v.tipo_vial ? v.tipo_vial + " " : ""}${v.nombre}</div>
+      <div class="via-meta">${dist}${v.municipio} (${v.provincia}) · ${v.n_portales} portales</div>
+    `;
+    row.addEventListener("click", () => selectVia(v, row));
+    resultsEl.appendChild(row);
+  });
+}
+
+async function doSearch(q) {
+  if (q.length < 2) {
+    clearResults();
+    setStatus("");
+    return;
+  }
+  setStatus("Buscando...");
+  try {
+    const center = map.getCenter();
+    const vias = await apiGet("/buscar", {
+      q,
+      limit: 15,
+      lat: center.lat,
+      lon: center.lng,
+    });
+    renderViaResults(vias);
+  } catch (e) {
+    setStatus("Error buscando: " + e.message, true);
+  }
+}
+
+searchInput.addEventListener("input", () => {
+  nearMode = false;
+  nearBtn.classList.remove("active");
+  clearNearMarkers();
+  clearTimeout(searchDebounce);
+  const q = searchInput.value.trim();
+  searchDebounce = setTimeout(() => doSearch(q), 300);
+});
+
+// --- Seleccionar una calle: marcador + portales ---
+async function selectVia(via, rowEl) {
+  selectedVia = via;
+  document.querySelectorAll(".result").forEach((r) => r.classList.remove("selected"));
+  if (rowEl) rowEl.classList.add("selected");
+
+  if (viaMarker) viaMarker.remove();
+  if (portalMarker) portalMarker.remove();
+  viaMarker = new maplibregl.Marker({ color: "#2563eb" })
+    .setLngLat([via.lon, via.lat])
+    .setPopup(new maplibregl.Popup().setHTML(`<b>${via.tipo_vial || ""} ${via.nombre}</b><br>${via.municipio}`))
+    .addTo(map);
+  map.flyTo({ center: [via.lon, via.lat], zoom: 16 });
+
+  portalesBox.classList.add("visible");
+  portalesList.innerHTML = "cargando...";
+  try {
+    const portales = await apiGet(`/vias/${via.via_id}/portales`);
+    portalesList.innerHTML = "";
+    if (portales.length === 0) {
+      portalesList.textContent = "Sin portales registrados.";
+      return;
+    }
+    portales.forEach((p) => {
+      const chip = document.createElement("div");
+      chip.className = "numero-chip";
+      chip.textContent = p.numero ? p.numero + (p.extension || "") : "S/N";
+      chip.addEventListener("click", () => {
+        document.querySelectorAll(".numero-chip").forEach((c) => c.classList.remove("selected"));
+        chip.classList.add("selected");
+        if (portalMarker) portalMarker.remove();
+        portalMarker = new maplibregl.Marker({ color: "#dc2626" })
+          .setLngLat([p.lon, p.lat])
+          .setPopup(new maplibregl.Popup().setHTML(`<b>Nº ${chip.textContent}</b><br>${p.cod_postal || ""}`))
+          .addTo(map);
+        map.flyTo({ center: [p.lon, p.lat], zoom: 18 });
+      });
+      portalesList.appendChild(chip);
+    });
+  } catch (e) {
+    portalesList.textContent = "Error cargando portales: " + e.message;
+  }
+}
+
+// --- Buscar cerca de mi ---
+nearBtn.addEventListener("click", () => {
+  if (!navigator.geolocation) {
+    setStatus("Geolocalización no disponible en este navegador.", true);
+    return;
+  }
+  nearMode = true;
+  nearBtn.classList.add("active");
+  searchInput.value = "";
+  setStatus("Localizando...");
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const { latitude, longitude } = pos.coords;
+      map.flyTo({ center: [longitude, latitude], zoom: 16 });
+      setStatus("Buscando direcciones cercanas...");
+      try {
+        const portales = await apiGet("/cerca", { lat: latitude, lon: longitude, limit: 12 });
+        clearResults();
+        clearNearMarkers();
+        if (portales.length === 0) {
+          setStatus("No se encontraron direcciones cerca.");
+          return;
+        }
+        setStatus(`${portales.length} direcciones cercanas`);
+        portales.forEach((p) => {
+          const marker = new maplibregl.Marker({ color: "#16a34a" })
+            .setLngLat([p.lon, p.lat])
+            .setPopup(
+              new maplibregl.Popup().setHTML(
+                `<b>${p.tipo_vial || ""} ${p.via_nombre} ${p.numero || ""}</b><br>${p.municipio}`
+              )
+            )
+            .addTo(map);
+          nearMarkers.push(marker);
+
+          const row = document.createElement("div");
+          row.className = "result";
+          row.innerHTML = `
+            <div class="via-name">${p.tipo_vial ? p.tipo_vial + " " : ""}${p.via_nombre} ${p.numero || ""}</div>
+            <div class="via-meta"><span class="via-dist">${Math.round(p.distancia_m)} m</span> · ${p.municipio}</div>
+          `;
+          row.addEventListener("click", () => {
+            map.flyTo({ center: [p.lon, p.lat], zoom: 18 });
+            marker.togglePopup();
+          });
+          resultsEl.appendChild(row);
+        });
+      } catch (e) {
+        setStatus("Error: " + e.message, true);
+      }
+    },
+    (err) => {
+      setStatus("No se pudo obtener tu ubicación: " + err.message, true);
+      nearMode = false;
+      nearBtn.classList.remove("active");
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+});
+</script>
+</body>
+</html>
