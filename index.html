@@ -182,6 +182,9 @@ let selectedVia = null;
 let searchDebounce = null;
 let userPos = null;
 let userMarker = null;
+// Numero de portal detectado por doSearch (ver splitTrailingNumero) que
+// hay que preseleccionar en cuanto carguen los portales de la via.
+let pendingNumero = null;
 
 const $ = (id) => document.getElementById(id);
 const searchInput = $("search");
@@ -271,22 +274,81 @@ function renderViaResults(vias) {
   });
 }
 
+// "calle mayor 15" -> ["calle mayor", "15"]; null si no hay un numero
+// puramente numerico al final (o si tras quitarlo no queda texto).
+function splitTrailingNumero(q) {
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const last = tokens[tokens.length - 1];
+  if (!last || !/^\d+$/.test(last)) return null;
+  tokens.pop();
+  if (tokens.length === 0) return null;
+  return [tokens.join(" "), last];
+}
+
+// via_fts (endpoint /buscar) solo indexa nombres de calle, asi que
+// "Calle Mayor 15" no encuentra nada tal cual. De las vias candidatas
+// sin el numero, nos quedamos solo con las que de verdad tienen un
+// portal con ese numero exacto - segunda consulta al endpoint ya
+// existente /vias/{id}/portales?numero=, una por via candidata.
+async function filtrarPorPortalExistente(vias, numero) {
+  const resultados = await Promise.all(
+    vias.map(async (via) => {
+      try {
+        const portales = await apiGet(`/vias/${via.via_id}/portales`, { numero });
+        return portales.length > 0 ? via : null;
+      } catch (_) {
+        return null;
+      }
+    })
+  );
+  return resultados.filter(Boolean);
+}
+
 async function doSearch(q) {
   if (q.length < 2) {
     clearResults();
     setStatus("");
     return;
   }
+  pendingNumero = null;
   setStatus("Buscando...");
   try {
     const center = searchBiasCenter();
-    const vias = await apiGet("/buscar", {
+    let vias = await apiGet("/buscar", {
       q,
       limit: 15,
       lat: center.lat,
       lon: center.lon,
     });
+
+    if (vias.length === 0) {
+      const partido = splitTrailingNumero(q);
+      if (partido) {
+        const [resto, numero] = partido;
+        const viasSinNumero = await apiGet("/buscar", {
+          q: resto,
+          limit: 15,
+          lat: center.lat,
+          lon: center.lon,
+        });
+        if (viasSinNumero.length > 0) {
+          const conPortal = await filtrarPorPortalExistente(viasSinNumero, numero);
+          if (conPortal.length > 0) {
+            vias = conPortal;
+            pendingNumero = numero;
+          } else {
+            vias = viasSinNumero;
+          }
+        }
+      }
+    }
+
     renderViaResults(vias);
+    // Solo una calle candidata y ya sabemos que tiene ese portal: nos
+    // ahorramos el clic y vamos directos a ella.
+    if (pendingNumero && vias.length === 1) {
+      selectVia(vias[0]);
+    }
   } catch (e) {
     setStatus("Error buscando: " + e.message, true);
   }
@@ -326,21 +388,25 @@ async function selectVia(via, rowEl) {
       const chip = document.createElement("div");
       chip.className = "numero-chip";
       chip.textContent = p.numero ? p.numero + (p.extension || "") : "S/N";
-      chip.addEventListener("click", () => {
-        document.querySelectorAll(".numero-chip").forEach((c) => c.classList.remove("selected"));
-        chip.classList.add("selected");
-        if (portalMarker) portalMarker.remove();
-        portalMarker = new maplibregl.Marker({ color: "#dc2626" })
-          .setLngLat([p.lon, p.lat])
-          .setPopup(new maplibregl.Popup().setHTML(`<b>Nº ${chip.textContent}</b><br>${p.cod_postal || ""}`))
-          .addTo(map);
-        map.flyTo({ center: [p.lon, p.lat], zoom: 18 });
-      });
+      chip.addEventListener("click", () => selectPortal(p, chip));
       portalesList.appendChild(chip);
+      if (pendingNumero && p.numero === pendingNumero) selectPortal(p, chip);
     });
+    pendingNumero = null;
   } catch (e) {
     portalesList.textContent = "Error cargando portales: " + e.message;
   }
+}
+
+function selectPortal(p, chip) {
+  document.querySelectorAll(".numero-chip").forEach((c) => c.classList.remove("selected"));
+  chip.classList.add("selected");
+  if (portalMarker) portalMarker.remove();
+  portalMarker = new maplibregl.Marker({ color: "#dc2626" })
+    .setLngLat([p.lon, p.lat])
+    .setPopup(new maplibregl.Popup().setHTML(`<b>Nº ${chip.textContent}</b><br>${p.cod_postal || ""}`))
+    .addTo(map);
+  map.flyTo({ center: [p.lon, p.lat], zoom: 18 });
 }
 
 // --- Ir a mi ubicacion (solo centra el mapa, no busca direcciones) ---
