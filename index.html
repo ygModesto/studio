@@ -74,7 +74,6 @@
     cursor: pointer;
   }
   #near-btn:hover { background: #f3f4f6; }
-  #near-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
 
   #status {
     padding: 0 16px 8px;
@@ -88,6 +87,7 @@
     overflow-y: auto;
     border-top: 1px solid var(--border);
   }
+  #results.collapsed { display: none; }
   .result {
     padding: 10px 16px;
     border-bottom: 1px solid var(--border);
@@ -178,9 +178,7 @@ map.addControl(new maplibregl.NavigationControl(), "bottom-right");
 
 let viaMarker = null;
 let portalMarker = null;
-let nearMarkers = [];
 let selectedVia = null;
-let nearMode = false;
 let searchDebounce = null;
 let userPos = null;
 let userMarker = null;
@@ -196,11 +194,6 @@ const portalesList = $("portales-list");
 function setStatus(text, isError) {
   statusEl.textContent = text || "";
   statusEl.classList.toggle("error", !!isError);
-}
-
-function clearNearMarkers() {
-  nearMarkers.forEach((m) => m.remove());
-  nearMarkers = [];
 }
 
 function setUserPos(lat, lon) {
@@ -259,6 +252,7 @@ async function apiGet(path, params) {
 // --- Busqueda de texto (con sesgo de cercania a la ubicacion del usuario, o al centro visible del mapa si no hay geolocalizacion) ---
 function renderViaResults(vias) {
   clearResults();
+  resultsEl.classList.remove("collapsed");
   if (vias.length === 0) {
     setStatus("Sin resultados.");
     return;
@@ -299,9 +293,6 @@ async function doSearch(q) {
 }
 
 searchInput.addEventListener("input", () => {
-  nearMode = false;
-  nearBtn.classList.remove("active");
-  clearNearMarkers();
   clearTimeout(searchDebounce);
   const q = searchInput.value.trim();
   searchDebounce = setTimeout(() => doSearch(q), 300);
@@ -312,6 +303,7 @@ async function selectVia(via, rowEl) {
   selectedVia = via;
   document.querySelectorAll(".result").forEach((r) => r.classList.remove("selected"));
   if (rowEl) rowEl.classList.add("selected");
+  resultsEl.classList.add("collapsed");
 
   if (viaMarker) viaMarker.remove();
   if (portalMarker) portalMarker.remove();
@@ -351,62 +343,22 @@ async function selectVia(via, rowEl) {
   }
 }
 
-// --- Buscar cerca de mi ---
+// --- Ir a mi ubicacion (solo centra el mapa, no busca direcciones) ---
 nearBtn.addEventListener("click", () => {
   if (!navigator.geolocation) {
     setStatus("Geolocalización no disponible en este navegador.", true);
     return;
   }
-  nearMode = true;
-  nearBtn.classList.add("active");
-  searchInput.value = "";
   setStatus("Localizando...");
   navigator.geolocation.getCurrentPosition(
-    async (pos) => {
+    (pos) => {
       const { latitude, longitude } = pos.coords;
       setUserPos(latitude, longitude);
       map.flyTo({ center: [longitude, latitude], zoom: 16 });
-      setStatus("Buscando direcciones cercanas...");
-      try {
-        const portales = await apiGet("/cerca", { lat: latitude, lon: longitude, limit: 12 });
-        clearResults();
-        clearNearMarkers();
-        if (portales.length === 0) {
-          setStatus("No se encontraron direcciones cerca.");
-          return;
-        }
-        setStatus(`${portales.length} direcciones cercanas`);
-        portales.forEach((p) => {
-          const marker = new maplibregl.Marker({ color: "#16a34a" })
-            .setLngLat([p.lon, p.lat])
-            .setPopup(
-              new maplibregl.Popup().setHTML(
-                `<b>${p.tipo_vial || ""} ${p.via_nombre} ${p.numero || ""}</b><br>${p.municipio}`
-              )
-            )
-            .addTo(map);
-          nearMarkers.push(marker);
-
-          const row = document.createElement("div");
-          row.className = "result";
-          row.innerHTML = `
-            <div class="via-name">${p.tipo_vial ? p.tipo_vial + " " : ""}${p.via_nombre} ${p.numero || ""}</div>
-            <div class="via-meta"><span class="via-dist">${Math.round(p.distancia_m)} m</span> · ${p.municipio}</div>
-          `;
-          row.addEventListener("click", () => {
-            map.flyTo({ center: [p.lon, p.lat], zoom: 18 });
-            marker.togglePopup();
-          });
-          resultsEl.appendChild(row);
-        });
-      } catch (e) {
-        setStatus("Error: " + e.message, true);
-      }
+      setStatus("");
     },
     (err) => {
       setStatus("No se pudo obtener tu ubicación: " + err.message, true);
-      nearMode = false;
-      nearBtn.classList.remove("active");
     },
     { enableHighAccuracy: true, timeout: 10000 }
   );
