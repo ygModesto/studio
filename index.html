@@ -116,6 +116,15 @@
   }
   .numero-chip:hover, .numero-chip.selected { background: var(--accent); color: white; border-color: var(--accent); }
 
+  .user-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid white;
+    box-shadow: 0 0 0 4px rgba(37,99,235,0.25);
+  }
+
   #attribution-note {
     position: absolute;
     bottom: 6px;
@@ -173,6 +182,8 @@ let nearMarkers = [];
 let selectedVia = null;
 let nearMode = false;
 let searchDebounce = null;
+let userPos = null;
+let userMarker = null;
 
 const $ = (id) => document.getElementById(id);
 const searchInput = $("search");
@@ -190,6 +201,35 @@ function setStatus(text, isError) {
 function clearNearMarkers() {
   nearMarkers.forEach((m) => m.remove());
   nearMarkers = [];
+}
+
+function setUserPos(lat, lon) {
+  userPos = { lat, lon };
+  if (userMarker) userMarker.remove();
+  const el = document.createElement("div");
+  el.className = "user-dot";
+  userMarker = new maplibregl.Marker({ element: el })
+    .setLngLat([lon, lat])
+    .setPopup(new maplibregl.Popup().setHTML("Tu ubicación"))
+    .addTo(map);
+}
+
+// Sesgo de cercania para /buscar: la posicion real del usuario si la
+// tenemos, si no el centro visible del mapa (fallback previo).
+function searchBiasCenter() {
+  if (userPos) return userPos;
+  const c = map.getCenter();
+  return { lat: c.lat, lon: c.lng };
+}
+
+// Geolocalizacion silenciosa al cargar: si el usuario acepta, mejora el
+// orden de resultados de /buscar sin necesidad de pulsar el boton 🎯.
+if (navigator.geolocation) {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => setUserPos(pos.coords.latitude, pos.coords.longitude),
+    () => {},
+    { enableHighAccuracy: false, timeout: 8000 }
+  );
 }
 
 function clearResults() {
@@ -216,7 +256,7 @@ async function apiGet(path, params) {
   return res.json();
 }
 
-// --- Busqueda de texto (con sesgo de cercania al centro visible del mapa) ---
+// --- Busqueda de texto (con sesgo de cercania a la ubicacion del usuario, o al centro visible del mapa si no hay geolocalizacion) ---
 function renderViaResults(vias) {
   clearResults();
   if (vias.length === 0) {
@@ -245,12 +285,12 @@ async function doSearch(q) {
   }
   setStatus("Buscando...");
   try {
-    const center = map.getCenter();
+    const center = searchBiasCenter();
     const vias = await apiGet("/buscar", {
       q,
       limit: 15,
       lat: center.lat,
-      lon: center.lng,
+      lon: center.lon,
     });
     renderViaResults(vias);
   } catch (e) {
@@ -324,6 +364,7 @@ nearBtn.addEventListener("click", () => {
   navigator.geolocation.getCurrentPosition(
     async (pos) => {
       const { latitude, longitude } = pos.coords;
+      setUserPos(latitude, longitude);
       map.flyTo({ center: [longitude, latitude], zoom: 16 });
       setStatus("Buscando direcciones cercanas...");
       try {
