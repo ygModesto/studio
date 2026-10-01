@@ -253,23 +253,39 @@ async function apiGet(path, params) {
 }
 
 // --- Busqueda de texto (con sesgo de cercania a la ubicacion del usuario, o al centro visible del mapa si no hay geolocalizacion) ---
-function renderViaResults(vias) {
+// /buscar mezcla municipios (tipo:"municipio") y calles (tipo:"via") en
+// una sola lista, como el autocompletado de Google Maps - cada tipo se
+// pinta y se gestiona distinto (ver selectMunicipio vs selectVia).
+function renderResultados(items) {
   clearResults();
   resultsEl.classList.remove("collapsed");
-  if (vias.length === 0) {
+  if (items.length === 0) {
     setStatus("Sin resultados.");
     return;
   }
-  setStatus(`${vias.length} calle(s) encontrada(s)`);
-  vias.forEach((v) => {
+  const nVias = items.filter((r) => r.tipo === "via").length;
+  const nMunicipios = items.length - nVias;
+  const partes = [];
+  if (nMunicipios) partes.push(`${nMunicipios} municipio(s)`);
+  if (nVias) partes.push(`${nVias} calle(s)`);
+  setStatus(`${partes.join(" · ")} encontrada(s)`);
+  items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "result";
-    const dist = v.distancia_m != null ? `<span class="via-dist">${Math.round(v.distancia_m)} m</span> · ` : "";
-    row.innerHTML = `
-      <div class="via-name">${v.tipo_vial ? v.tipo_vial + " " : ""}${v.nombre}</div>
-      <div class="via-meta">${dist}${v.municipio} (${v.provincia}) · ${v.n_portales} portales</div>
-    `;
-    row.addEventListener("click", () => selectVia(v, row));
+    if (item.tipo === "municipio") {
+      row.innerHTML = `
+        <div class="via-name">🏙️ ${item.nombre}</div>
+        <div class="via-meta">${item.provincia}</div>
+      `;
+      row.addEventListener("click", () => selectMunicipio(item, row));
+    } else {
+      const dist = item.distancia_m != null ? `<span class="via-dist">${Math.round(item.distancia_m)} m</span> · ` : "";
+      row.innerHTML = `
+        <div class="via-name">${item.tipo_vial ? item.tipo_vial + " " : ""}${item.nombre}</div>
+        <div class="via-meta">${dist}${item.municipio} (${item.provincia}) · ${item.n_portales} portales</div>
+      `;
+      row.addEventListener("click", () => selectVia(item, row));
+    }
     resultsEl.appendChild(row);
   });
 }
@@ -321,40 +337,49 @@ async function doSearch(q) {
   setStatus("Buscando...");
   try {
     const center = searchBiasCenter();
-    let vias = await apiGet("/buscar", {
+    let resultados = await apiGet("/buscar", {
       q,
       limit: 15,
       lat: center.lat,
       lon: center.lon,
     });
+    let vias = resultados.filter((r) => r.tipo === "via");
 
+    // El fallback de numero de portal solo tiene sentido sobre calles -
+    // si no hay ninguna (haya o no municipios en la respuesta), probamos
+    // a sacar el numero del texto y buscar otra vez sin el.
     if (vias.length === 0) {
       const partido = splitNumero(q);
       if (partido) {
         const [resto, numero] = partido;
-        const viasSinNumero = await apiGet("/buscar", {
+        const combinados = await apiGet("/buscar", {
           q: resto,
           limit: 15,
           lat: center.lat,
           lon: center.lon,
         });
+        const viasSinNumero = combinados.filter((r) => r.tipo === "via");
+        const municipios = combinados.filter((r) => r.tipo === "municipio");
         if (viasSinNumero.length > 0) {
           const conPortal = await filtrarPorPortalExistente(viasSinNumero, numero);
           if (conPortal.length > 0) {
-            vias = conPortal;
+            resultados = [...municipios, ...conPortal];
             pendingNumero = numero;
           } else {
-            vias = viasSinNumero;
+            resultados = combinados;
           }
+        } else {
+          resultados = combinados;
         }
       }
     }
 
-    renderViaResults(vias);
-    // Solo una calle candidata y ya sabemos que tiene ese portal: nos
-    // ahorramos el clic y vamos directos a ella.
-    if (pendingNumero && vias.length === 1) {
-      selectVia(vias[0]);
+    renderResultados(resultados);
+    // Solo una calle candidata, nada mas en la lista, y ya sabemos que
+    // tiene ese portal: nos ahorramos el clic y vamos directos a ella.
+    const viasFinal = resultados.filter((r) => r.tipo === "via");
+    if (pendingNumero && viasFinal.length === 1 && resultados.length === 1) {
+      selectVia(viasFinal[0]);
     }
   } catch (e) {
     setStatus("Error buscando: " + e.message, true);
@@ -403,6 +428,26 @@ async function selectVia(via, rowEl) {
   } catch (e) {
     portalesList.textContent = "Error cargando portales: " + e.message;
   }
+}
+
+// --- Seleccionar un municipio: solo centra el mapa, sin portales ---
+function selectMunicipio(municipio, rowEl) {
+  selectedVia = null;
+  document.querySelectorAll(".result").forEach((r) => r.classList.remove("selected"));
+  if (rowEl) rowEl.classList.add("selected");
+  resultsEl.classList.add("collapsed");
+
+  if (viaMarker) viaMarker.remove();
+  if (portalMarker) portalMarker.remove();
+  portalMarker = null;
+  viaMarker = new maplibregl.Marker({ color: "#2563eb" })
+    .setLngLat([municipio.lon, municipio.lat])
+    .setPopup(new maplibregl.Popup().setHTML(`<b>${municipio.nombre}</b><br>${municipio.provincia}`))
+    .addTo(map);
+  map.flyTo({ center: [municipio.lon, municipio.lat], zoom: 13 });
+
+  portalesBox.classList.remove("visible");
+  portalesList.innerHTML = "";
 }
 
 function selectPortal(p, chip) {
